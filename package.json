@@ -1,0 +1,12 @@
+{
+  "name": "bulk-role-bot",
+  "version": "1.0.0",
+  "description": "Temporary Discord bot to bulk-create roles with colors and hierarchy order",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1"
+  }
+}
