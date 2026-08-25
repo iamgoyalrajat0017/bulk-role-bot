@@ -22,7 +22,7 @@ const commands = [
     )
 ].map(cmd => cmd.toJSON());
 
-const GUILD_ID = '1541785862126440460';
+const GUILD_ID = '1530186411179769897';
 
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
