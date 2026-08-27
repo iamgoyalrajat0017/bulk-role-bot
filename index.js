@@ -11,7 +11,7 @@ const {
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
 // ⚠️ Put YOUR real Discord server ID here (same one you already used before).
-const GUILD_ID = 'PASTE_YOUR_SERVER_ID_HERE';
+const GUILD_ID = '1530186411179769897';
 
 const commands = [
   new SlashCommandBuilder()
