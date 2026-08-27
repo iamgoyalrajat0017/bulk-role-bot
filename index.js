@@ -12,8 +12,8 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBit
 
 // ⚠️ Put ALL your Discord server IDs here (one per server, comma-separated).
 const GUILD_IDS = [
-  'PASTE_SERVER_ID_1_HERE',
-  'PASTE_SERVER_ID_2_HERE'
+  '1530186411179769897',
+  '1493902508609765519'
 ];
 
 const commands = [
