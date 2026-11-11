@@ -22,8 +22,8 @@ require('http')
 
 // ⚠️ Put ALL your Discord server IDs here (one per server, comma-separated).
 const GUILD_IDS = [
-  '1530186411179769897',
-  '1493902508609765519'
+  '1569981946463785032',
+  '1534512697754914889'
 ];
 
 const commands = [
