@@ -106,6 +106,9 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName('deleteallcategories')
+    .setDescription('Preview and delete all categories and every channel inside them'),
+  new SlashCommandBuilder()
     .setName('renamecategory')
     .setDescription('Preview and rename all channels in a category by their current order')
     .addStringOption(option =>
@@ -190,6 +193,7 @@ client.on('interactionCreate', async interaction => {
   if (interaction.commandName === 'cleanupbotroles') return handleCleanupBotRoles(interaction);
   if (interaction.commandName === 'copyroles') return handleCopyRoles(interaction);
   if (interaction.commandName === 'deletecategory') return handleDeleteCategory(interaction);
+  if (interaction.commandName === 'deleteallcategories') return handleDeleteAllCategories(interaction);
   if (interaction.commandName === 'renamecategory') return handleRenameCategory(interaction);
   if (interaction.commandName === 'channelperms') return handleChannelPerms(interaction);
   if (interaction.commandName === 'bulkrenamechannels') return handleBulkRenameChannels(interaction);
@@ -818,6 +822,104 @@ async function handleCopyRoles(interaction) {
     .setFooter({ text: `${created.length} created, ${skipped.length} skipped, ${failed.length} failed` });
 
   await interaction.editReply({ embeds: [embed] });
+}
+
+
+async function handleDeleteAllCategories(interaction) {
+  if (!interaction.memberPermissions.has(PermissionsBitField.Flags.ManageChannels)) {
+    return interaction.reply({ content: 'You need the **Manage Channels** permission.', ephemeral: true });
+  }
+
+  const botMember = interaction.guild.members.me;
+  if (!botMember.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+    return interaction.reply({ content: 'I need the **Manage Channels** permission.', ephemeral: true });
+  }
+
+  await interaction.guild.channels.fetch();
+  const categories = [...interaction.guild.channels.cache.values()]
+    .filter(c => c.type === ChannelType.GuildCategory)
+    .sort((a, b) => a.position - b.position);
+
+  if (categories.length === 0) {
+    return interaction.reply({ content: 'This server has no categories to delete.', ephemeral: true });
+  }
+
+  const plan = categories.map(category => ({
+    category,
+    children: [...interaction.guild.channels.cache.values()].filter(c => c.parentId === category.id)
+  }));
+  const totalChannels = plan.reduce((sum, item) => sum + item.children.length, 0);
+  const preview = plan.map(item =>
+    `• **${item.category.name}** — ${item.children.length} channel(s)`
+  ).join('\n');
+
+  const confirmId = `deleteallcategories_confirm_${interaction.id}`;
+  const cancelId = `deleteallcategories_cancel_${interaction.id}`;
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(confirmId).setLabel('Delete All Categories').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(cancelId).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+  );
+
+  const message = await interaction.reply({
+    content:
+      `⚠️ **Review before deleting**\nThis will delete **${categories.length} categories** and **${totalChannels} channels** inside them.\n\n` +
+      preview.slice(0, 3000) +
+      '\n\nChannels outside categories will not be touched. Press the red button to confirm.',
+    components: [row],
+    ephemeral: true,
+    fetchReply: true
+  });
+
+  const collector = message.createMessageComponentCollector({
+    time: 60_000,
+    filter: i => i.user.id === interaction.user.id && [confirmId, cancelId].includes(i.customId),
+    max: 1
+  });
+
+  collector.on('collect', async i => {
+    if (i.customId === cancelId) {
+      return i.update({ content: 'Cancelled. Nothing was deleted.', components: [] });
+    }
+
+    await i.update({ content: '⏳ Deleting categories and their channels…', components: [] });
+    const deleted = [];
+    const failed = [];
+
+    for (const { category, children } of plan) {
+      for (const channel of children) {
+        try {
+          await channel.delete(`Delete all categories by ${interaction.user.tag}`);
+          deleted.push(`#${channel.name}`);
+        } catch (err) {
+          failed.push(`#${channel.name}: ${err.message}`);
+        }
+      }
+      try {
+        await category.delete(`Delete all categories by ${interaction.user.tag}`);
+        deleted.push(`[category] ${category.name}`);
+      } catch (err) {
+        failed.push(`${category.name}: ${err.message}`);
+      }
+    }
+
+    const result = new EmbedBuilder()
+      .setTitle('Delete All Categories — Results')
+      .setColor(failed.length ? 0xffa500 : 0x00ff00)
+      .setDescription(`Deleted: **${deleted.length}**\nFailed: **${failed.length}**`)
+      .addFields({
+        name: 'Failed / skipped',
+        value: failed.length ? failed.join('\n').slice(0, 1024) : 'None'
+      });
+    await interaction.editReply({ content: '', embeds: [result], components: [] });
+  });
+
+  collector.on('end', async collected => {
+    if (collected.size === 0) {
+      try {
+        await interaction.editReply({ content: 'Timed out. Nothing was deleted.', components: [] });
+      } catch (_) {}
+    }
+  });
 }
 
 async function handleDeleteCategory(interaction) {
