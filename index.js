@@ -1801,7 +1801,7 @@ async function runCopyWizard(interaction, config) {
     const roles = [...targetGuild.roles.cache.values()]
       .filter(r => r.id !== targetGuild.id && !r.managed)
       .sort((a, b) => b.position - a.position)
-      .slice(0, 24); // leave a slot for the "bottom" option
+      .slice(0, 23); // reserve two slots for Auto-match and Bottom
 
     const menu = new StringSelectMenuBuilder()
       .setCustomId(`${prefix}_anchor_select`)
