@@ -149,6 +149,9 @@ const commands = [
     .setName('channelcopy')
     .setDescription('Pick channels/categories from a menu and copy them (with permissions) to another server'),
   new SlashCommandBuilder()
+    .setName('serverclone')
+    .setDescription('Replace target channels and optionally roles with this server\'s structure'),
+  new SlashCommandBuilder()
     .setName('categorycopy')
     .setDescription('Copy one specific category and ALL of its channels to another server')
     .addStringOption(option =>
@@ -200,6 +203,7 @@ client.on('interactionCreate', async interaction => {
   if (interaction.commandName === 'rolecopy') return handleRoleCopy(interaction);
   if (interaction.commandName === 'channelcopy') return handleChannelCopy(interaction);
   if (interaction.commandName === 'categorycopy') return handleCategoryCopy(interaction);
+  if (interaction.commandName === 'serverclone') return handleServerClone(interaction);
 });
 
 async function handleBulkRoles(interaction) {
@@ -2036,6 +2040,233 @@ async function handleRoleCopy(interaction) {
           { name: '❌ Failed', value: failed.length ? failed.join('\n').slice(0, 1024) : 'None', inline: true }
         )
         .setFooter({ text: `${created.length} created, ${skipped.length} skipped, ${failed.length} failed` });
+    }
+  });
+}
+
+async function handleServerClone(interaction) {
+  if (!interaction.inGuild() || !interaction.memberPermissions.has(PermissionsBitField.Flags.ManageChannels)) {
+    return interaction.reply({ content: 'Use this command in a server where you have **Manage Channels**.', ephemeral: true });
+  }
+  const sourceBot = interaction.guild.members.me;
+  if (!sourceBot || !sourceBot.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+    return interaction.reply({ content: 'I need **Manage Channels** permission in this source server.', ephemeral: true });
+  }
+  await interaction.guild.channels.fetch();
+  await interaction.guild.roles.fetch();
+
+  const targetGuilds = getMutualTargetGuilds(interaction.guild.id);
+  if (!targetGuilds.length) {
+    return interaction.reply({ content: "I'm not in any other server, so there's nowhere to clone to.", ephemeral: true });
+  }
+
+  const prefix = 'sc_' + interaction.id;
+  let stage = 'target';
+  let targetGuildId = null;
+  let includeRoles = false;
+  let finished = false;
+
+  const targetMenu = new StringSelectMenuBuilder()
+    .setCustomId(prefix + '_target')
+    .setPlaceholder('Choose the target server')
+    .addOptions(targetGuilds.slice(0, 25).map(g => ({
+      label: g.name.slice(0, 100),
+      value: g.id,
+      description: 'ID: ' + g.id
+    })));
+
+  const message = await interaction.reply({
+    content: '**Server clone**\nSource: **' + interaction.guild.name + '**\nChoose the server whose existing channels will be replaced.',
+    components: [
+      new ActionRowBuilder().addComponents(targetMenu),
+      new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(prefix + '_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary))
+    ],
+    ephemeral: true,
+    fetchReply: true
+  });
+
+  const collector = message.createMessageComponentCollector({
+    time: 180_000,
+    filter: i => i.user.id === interaction.user.id && i.customId.startsWith(prefix)
+  });
+
+  collector.on('collect', async i => {
+    try {
+      if (i.customId === prefix + '_cancel') {
+        finished = true;
+        collector.stop('cancelled');
+        return i.update({ content: 'Cancelled. Nothing was changed.', embeds: [], components: [] });
+      }
+
+      if (stage === 'target' && i.customId === prefix + '_target') {
+        targetGuildId = i.values[0];
+        const targetGuild = client.guilds.cache.get(targetGuildId);
+        if (!targetGuild) return i.update({ content: 'Target server is unavailable. Run /serverclone again.', components: [] });
+        await targetGuild.channels.fetch();
+        await targetGuild.roles.fetch();
+        const targetBot = targetGuild.members.me;
+        if (!targetBot || !targetBot.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+          return i.update({ content: 'I need **Manage Channels** permission in the target server.', components: [] });
+        }
+        stage = 'roles';
+        const rolePrompt = new EmbedBuilder()
+          .setTitle('Should roles be replaced too?')
+          .setColor(0x5865f2)
+          .setDescription(
+            'Target: **' + targetGuild.name + '**\n\n' +
+            '**Yes** = delete the target server\'s deletable custom roles, then copy this source server\'s roles.\n' +
+            '**No** = leave every target role untouched and copy channels only.\n\n' +
+            'Deleting roles removes those role assignments from members. @everyone and integration-managed or higher-than-bot roles cannot be deleted.'
+          );
+        return i.update({
+          content: '',
+          embeds: [rolePrompt],
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder().setCustomId(prefix + '_roles_yes').setLabel('Yes, replace roles').setStyle(ButtonStyle.Danger),
+              new ButtonBuilder().setCustomId(prefix + '_roles_no').setLabel('No, channels only').setStyle(ButtonStyle.Success)
+            ),
+            new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(prefix + '_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary))
+          ]
+        });
+      }
+
+      if (stage === 'roles' && (i.customId === prefix + '_roles_yes' || i.customId === prefix + '_roles_no')) {
+        includeRoles = i.customId === prefix + '_roles_yes';
+        const targetGuild = client.guilds.cache.get(targetGuildId);
+        const targetBot = targetGuild.members.me;
+        if (includeRoles) {
+          if (!interaction.memberPermissions.has(PermissionsBitField.Flags.ManageRoles)) {
+            return i.reply({ content: 'You need **Manage Roles** in the source server to choose role replacement.', ephemeral: true });
+          }
+          if (!targetBot || !targetBot.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
+            return i.reply({ content: 'I need **Manage Roles** permission in the target server to replace roles.', ephemeral: true });
+          }
+        }
+
+        await targetGuild.channels.fetch();
+        await targetGuild.roles.fetch();
+        const targetChannels = [...targetGuild.channels.cache.values()];
+        const rolesToDelete = includeRoles
+          ? [...targetGuild.roles.cache.values()].filter(r =>
+              r.id !== targetGuild.id && !r.managed && targetBot.roles.highest.position > r.position
+            )
+          : [];
+        const sourceChannels = [...interaction.guild.channels.cache.values()];
+        const sourceRoleCount = includeRoles
+          ? [...interaction.guild.roles.cache.values()].filter(r => r.id !== interaction.guild.id && !r.managed).length
+          : 0;
+
+        stage = 'confirm';
+        const summary = new EmbedBuilder()
+          .setTitle('Final server-clone confirmation')
+          .setColor(0xffa500)
+          .setDescription(
+            '**Source:** ' + interaction.guild.name + '\n' +
+            '**Target:** ' + targetGuild.name + '\n\n' +
+            '**Target channels/categories to delete:** ' + targetChannels.length + '\n' +
+            '**Source channels/categories to copy:** ' + sourceChannels.length + '\n' +
+            '**Target roles to delete:** ' + rolesToDelete.length + '\n' +
+            '**Source roles to copy:** ' + sourceRoleCount + '\n\n' +
+            'Role replacement: **' + (includeRoles ? 'YES' : 'NO — channels only') + '**\n\n' +
+            (includeRoles
+              ? '⚠️ Existing deletable target roles will be removed. Members will lose those role assignments. Managed roles, @everyone, and roles above the bot will remain.'
+              : 'Existing roles and member role assignments will remain unchanged.') +
+            '\n\nPress **Replace target structure** only if these details are correct.'
+          );
+        return i.update({
+          content: '',
+          embeds: [summary],
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder().setCustomId(prefix + '_confirm').setLabel('Replace target structure').setStyle(ButtonStyle.Danger),
+              new ButtonBuilder().setCustomId(prefix + '_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+            )
+          ]
+        });
+      }
+
+      if (stage === 'confirm' && i.customId === prefix + '_confirm') {
+        finished = true;
+        collector.stop('confirmed');
+        await i.update({ content: '⏳ Clone started. Replacing target structure…', embeds: [], components: [] });
+        const targetGuild = client.guilds.cache.get(targetGuildId);
+        const deletedChannels = [];
+        const failed = [];
+
+        try {
+          await targetGuild.channels.fetch();
+          const targetChannels = [...targetGuild.channels.cache.values()];
+          const nonCategories = targetChannels.filter(c => c.type !== ChannelType.GuildCategory);
+          const categories = targetChannels.filter(c => c.type === ChannelType.GuildCategory);
+          for (const channel of [...nonCategories, ...categories]) {
+            try {
+              const label = channel.type === ChannelType.GuildCategory ? '[category] ' + channel.name : '#' + channel.name;
+              await channel.delete('Server clone requested by ' + interaction.user.tag);
+              deletedChannels.push(label);
+            } catch (err) {
+              failed.push('Delete channel ' + channel.name + ': ' + err.message);
+            }
+          }
+
+          let roleResult = { created: [], skipped: [], failed: [] };
+          let deletedRolesCount = 0;
+          if (includeRoles) {
+            await targetGuild.roles.fetch();
+            const botMember = targetGuild.members.me;
+            const deletableRoles = [...targetGuild.roles.cache.values()].filter(r =>
+              r.id !== targetGuild.id && !r.managed && botMember.roles.highest.position > r.position
+            );
+            for (const role of deletableRoles) {
+              try {
+                await role.delete('Server clone requested by ' + interaction.user.tag);
+                deletedRolesCount++;
+              } catch (err) {
+                failed.push('Delete role ' + role.name + ': ' + err.message);
+              }
+            }
+            const sourceRoleIds = [...interaction.guild.roles.cache.values()]
+              .filter(r => r.id !== interaction.guild.id && !r.managed)
+              .map(r => r.id);
+            roleResult = await copySelectedRoles(interaction.guild, targetGuild, sourceRoleIds, interaction.user.tag, 'AUTO');
+            failed.push(...roleResult.failed);
+          }
+
+          const sourceChannelIds = [...interaction.guild.channels.cache.values()].map(c => c.id);
+          const channelResult = await copySelectedChannelItems(interaction.guild, targetGuild, sourceChannelIds, interaction.user.tag);
+          failed.push(...channelResult.failed);
+
+          const result = new EmbedBuilder()
+            .setTitle('Server Clone: ' + interaction.guild.name + ' → ' + targetGuild.name)
+            .setColor(failed.length ? 0xffa500 : 0x00ff00)
+            .addFields(
+              { name: 'Target channels/categories deleted', value: String(deletedChannels.length), inline: true },
+              { name: 'Categories copied', value: String(channelResult.createdCategories.length), inline: true },
+              { name: 'Channels copied', value: String(channelResult.createdChannels.length), inline: true },
+              { name: 'Target roles deleted', value: includeRoles ? String(deletedRolesCount) : 'Not requested', inline: true },
+              { name: 'Roles created', value: includeRoles ? String(roleResult.created.length) : 'Not requested', inline: true },
+              { name: 'Failed / skipped', value: failed.length ? failed.join('\n').slice(0, 1024) : 'None', inline: false }
+            )
+            .setFooter({ text: 'Role assignments are not copied between members. Only server structure and role definitions are copied.' });
+          await interaction.editReply({ content: '', embeds: [result], components: [] });
+        } catch (err) {
+          await interaction.editReply({
+            content: 'Clone stopped due to an unexpected error: ' + err.message + '. Some changes may already have happened.',
+            embeds: [],
+            components: []
+          });
+        }
+      }
+    } catch (err) {
+      try { await i.reply({ content: 'Error: ' + err.message, ephemeral: true }); } catch (_) {}
+    }
+  });
+
+  collector.on('end', async () => {
+    if (!finished) {
+      try {
+        await interaction.editReply({ content: 'Timed out. Nothing was changed.', embeds: [], components: [] });
+      } catch (_) {}
     }
   });
 }
