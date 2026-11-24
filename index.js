@@ -2114,7 +2114,7 @@ async function handleServerClone(interaction) {
           .setColor(0x5865f2)
           .setDescription(
             'Target: **' + targetGuild.name + '**\n\n' +
-            '**Yes** = delete the target server\\'s deletable custom roles, then copy this source server\\'s roles.\n' +
+            '**Yes** = delete the target server\'s deletable custom roles, then copy this source server\'s roles.\n' +
             '**No** = leave every target role untouched and copy channels only.\n\n' +
             'Deleting roles removes those role assignments from members. @everyone and integration-managed or higher-than-bot roles cannot be deleted.'
           );
